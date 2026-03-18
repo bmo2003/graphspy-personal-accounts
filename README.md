@@ -23,7 +23,8 @@ Microsoft blocks device code authentication for first-party client IDs (Azure CL
 |------|---------|
 | `graphspy/cli.py` | Opaque token handling in `save_access_token()`, `poll_device_codes()`, `refresh_to_access_token()`, `api_decode_token()`. Consumer endpoint routing. `save_refresh_token()` accepts "consumers" tenant. |
 | `graphspy/templates/device_codes.html` | Added netcorebrowser to Client ID dropdown. Added `microsoft.com/link` to Device Login URLs. |
-| `graphspy/templates/layout.html` | Token Options sidebar handles opaque tokens. "Refresh and activate" auto-detects consumer accounts and uses v2+scope. |
+| `graphspy/templates/access_tokens.html` | Added netcorebrowser to Client ID dropdowns on the Access Tokens page. |
+| `graphspy/templates/layout.html` | Token Options sidebar handles opaque tokens. "Refresh and activate" auto-detects consumer accounts and uses v2+scope. Added netcorebrowser to Client ID dropdown. |
 
 ## Installation
 
@@ -37,11 +38,12 @@ python install.py
 ```
 
 ### Manual
-Copy the three files from the `graphspy/` directory into your GraphSpy installation, replacing the originals:
+Copy the files from the `graphspy/` directory into your GraphSpy installation, replacing the originals:
 ```
-graphspy/cli.py                      -> <site-packages>/graphspy/cli.py
-graphspy/templates/device_codes.html -> <site-packages>/graphspy/templates/device_codes.html
-graphspy/templates/layout.html       -> <site-packages>/graphspy/templates/layout.html
+graphspy/cli.py                        -> <site-packages>/graphspy/cli.py
+graphspy/templates/access_tokens.html  -> <site-packages>/graphspy/templates/access_tokens.html
+graphspy/templates/device_codes.html   -> <site-packages>/graphspy/templates/device_codes.html
+graphspy/templates/layout.html         -> <site-packages>/graphspy/templates/layout.html
 ```
 
 Find your install path:

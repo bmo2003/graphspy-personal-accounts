@@ -46,6 +46,7 @@ def install():
 
     files_to_patch = [
         ("cli.py", gspy_dir / "cli.py"),
+        ("templates/access_tokens.html", gspy_dir / "templates" / "access_tokens.html"),
         ("templates/device_codes.html", gspy_dir / "templates" / "device_codes.html"),
         ("templates/layout.html", gspy_dir / "templates" / "layout.html"),
     ]

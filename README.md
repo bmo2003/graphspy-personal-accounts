@@ -12,11 +12,15 @@ pipx install graphspy
 git clone https://github.com/bmo2003/graphspy-personal-accounts.git
 cd graphspy-personal-accounts
 python install.py
-graphspy
 ```
 
-If GraphSpy wasn't running during install, load the demo templates separately:
+Then start GraphSpy and load the demo templates:
 ```bash
+graphspy
+```
+```bash
+# In a second terminal, navigate to the repo directory:
+cd path/to/graphspy-personal-accounts
 python load_templates.py
 ```
 
@@ -142,7 +146,7 @@ python -c "import graphspy; print(graphspy.__file__)"
 | Delete Email by ID | Delete specific emails (cover tracks) |
 | Upload File to OneDrive | Place a file in victim's cloud storage |
 
-## Demo Tips
+## Usage Tips
 
 - **Scope matters**: Use "MSGraph Full Access (Personal Accounts)" scope to get write permissions. The default "MSGraph" scope only gives read access.
 - **Search for sensitive keywords**: Use the search templates to find emails containing "password", "bank account", etc.

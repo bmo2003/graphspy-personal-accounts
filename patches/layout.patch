@@ -1,0 +1,79 @@
+--- a/graphspy/templates/layout.html
++++ b/graphspy/templates/layout.html
+@@ -195,7 +195,7 @@
+                         </datalist>
+                     </div>
+                     <div class="col-12">
+-                        <button type="Button" class="btn btn-primary" onclick="refreshToAccessToken(refresh_token_id_side.value, client_id_input_side.value, resource_input_side.value, '', false, true);reloadTables()">Refresh and activate</button>
++                        <button type="Button" class="btn btn-primary" onclick="handleSideRefresh()">Refresh and activate</button>
+                     </div>
+                 </form>
+                 <br>
+@@ -282,13 +282,38 @@
+                 return
+             }
+             access_token_info = JSON.parse(response_a.responseText);
+-            $('#access_token_info_user').text(access_token_info.unique_name);
+-            $('#access_token_info_resource').text(access_token_info.aud);
+-            $('#resource_input_side').val(access_token_info.aud);
+-            $('#access_token_info_clientid').text(access_token_info.appid);
+-            $('#client_id_input_side').val(access_token_info.appid);
+-            $('#access_token_info_scope').text(access_token_info.scp);
+-            var expiry_date = new Date(access_token_info.exp * 1000);
++            if (access_token_info.info) {
++                // Opaque token (personal account) — use DB metadata instead of JWT claims
++                let response_b = $.ajax({
++                    type: "GET",
++                    async: false,
++                    url: "/api/get_access_token/" + document.getElementById("side_menu_access_token_form").access_token_id_side.value
++                });
++                let token_row = JSON.parse(response_b.responseText);
++                // Get client ID from the active refresh token
++                let rtId = document.getElementById("side_menu_refresh_token_form").refresh_token_id_side.value;
++                let rtClientId = "";
++                if (rtId && rtId != "0") {
++                    let rtResp = $.ajax({ type: "GET", async: false, url: "/api/get_refresh_token/" + rtId });
++                    let rtInfo = JSON.parse(rtResp.responseText);
++                    rtClientId = rtInfo.client_id || "";
++                }
++                $('#access_token_info_user').text(token_row.user || "personal account");
++                $('#access_token_info_resource').text(token_row.resource || "unknown");
++                $('#resource_input_side').val("https://graph.microsoft.com");
++                $('#access_token_info_clientid').text(rtClientId);
++                $('#client_id_input_side').val(rtClientId);
++                $('#access_token_info_scope').text(token_row.resource || "");
++                var expiry_date = new Date(token_row.expires_at);
++            } else {
++                $('#access_token_info_user').text(access_token_info.unique_name);
++                $('#access_token_info_resource').text(access_token_info.aud);
++                $('#resource_input_side').val(access_token_info.aud);
++                $('#access_token_info_clientid').text(access_token_info.appid);
++                $('#client_id_input_side').val(access_token_info.appid);
++                $('#access_token_info_scope').text(access_token_info.scp);
++                var expiry_date = new Date(access_token_info.exp * 1000);
++            }
+             $('#access_token_info_expires').text(`${expiry_date.toLocaleDateString()} ${expiry_date.toTimeString().split(" ")[0]}`);
+             $("#access_token_card").removeClass(function (index, className) {
+                 return (className.match(/(^|\s)text-bg-\S+/g) || []).join(' ');
+@@ -324,6 +349,21 @@
+             $('#refresh_token_info_tenant_id').text(refresh_token_info.tenant_id);
+             $('#refresh_token_info_foci').text(refresh_token_info.foci);
+         }
++        function handleSideRefresh() {
++            // Check if active refresh token is a consumer account
++            let rtId = document.getElementById("side_menu_refresh_token_form").refresh_token_id_side.value;
++            let rtResp = $.ajax({ type: "GET", async: false, url: "/api/get_refresh_token/" + rtId });
++            let rtInfo = JSON.parse(rtResp.responseText);
++            let clientId = client_id_input_side.value || rtInfo.client_id;
++            if (rtInfo.tenant_id === "consumers") {
++                // Consumer account: use v2 endpoint with scope
++                let scope = resource_input_side.value ? resource_input_side.value + "/.default openid offline_access" : "https://graph.microsoft.com/.default openid offline_access";
++                refreshToAccessToken(rtId, clientId, '', scope, false, true, 2);
++            } else {
++                refreshToAccessToken(rtId, clientId, resource_input_side.value, '', false, true);
++            }
++            reloadTables();
++        }
+         obtainAccessTokenInfo();
+         obtainRefreshTokenInfo();
+     </script>

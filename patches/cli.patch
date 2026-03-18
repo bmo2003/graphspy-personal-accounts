@@ -1,0 +1,310 @@
+--- a/graphspy/cli.py
++++ b/graphspy/cli.py
+@@ -15,7 +15,7 @@
+ import urllib.parse
+ import binascii
+ import re
+-from datetime import datetime, timezone
++from datetime import datetime, timezone, timedelta
+ from threading import Thread
+ 
+ # External library imports
+@@ -257,40 +257,66 @@
+         response_text = response.text
+     return {"response_status_code": response.status_code ,"response_type": response_type ,"response_text": response_text, "response_headers": dict(response.headers)}
+ 
+-def save_access_token(accesstoken, description):
+-    decoded_accesstoken = jwt.decode(accesstoken, options={"verify_signature": False})
+-    user = "unknown"
+-    # If the idtype is user, use the unique_name or upn
+-    # If the idtype is app, use the app_displayname or appid
+-    # Otherwise, use whatever we can get
+-    if "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "user":
+-        user = decoded_accesstoken["unique_name"] if "unique_name" in decoded_accesstoken else decoded_accesstoken["upn"] if "upn" in decoded_accesstoken else "unknown"
+-    elif "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "app":
+-        user = decoded_accesstoken["app_displayname"] if "app_displayname" in decoded_accesstoken else decoded_accesstoken["appid"] if "appid" in decoded_accesstoken else "unknown"
++def save_access_token(accesstoken, description, token_response=None):
++    # Personal/consumer account tokens are opaque (not JWT), so jwt.decode will fail
++    try:
++        decoded_accesstoken = jwt.decode(accesstoken, options={"verify_signature": False})
++    except Exception:
++        decoded_accesstoken = None
++
++    if decoded_accesstoken:
++        user = "unknown"
++        # If the idtype is user, use the unique_name or upn
++        # If the idtype is app, use the app_displayname or appid
++        # Otherwise, use whatever we can get
++        if "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "user":
++            user = decoded_accesstoken["unique_name"] if "unique_name" in decoded_accesstoken else decoded_accesstoken["upn"] if "upn" in decoded_accesstoken else "unknown"
++        elif "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "app":
++            user = decoded_accesstoken["app_displayname"] if "app_displayname" in decoded_accesstoken else decoded_accesstoken["appid"] if "appid" in decoded_accesstoken else "unknown"
++        else:
++            user = decoded_accesstoken.get("unique_name") \
++                or decoded_accesstoken.get("upn") \
++                or decoded_accesstoken.get("app_displayname") \
++                or decoded_accesstoken.get("email") \
++                or decoded_accesstoken.get("preferred_username") \
++                or decoded_accesstoken.get("oid", "unknown")
++
++        row_id = execute_db("INSERT INTO accesstokens (stored_at, issued_at, expires_at, description, user, resource, accesstoken) VALUES (?,?,?,?,?,?,?)",(
++                f"{datetime.now()}".split(".")[0],
++                datetime.fromtimestamp(decoded_accesstoken["iat"]) if "iat" in decoded_accesstoken else "unknown",
++                datetime.fromtimestamp(decoded_accesstoken["exp"]) if "exp" in decoded_accesstoken else "unknown",
++                description,
++                user,
++                decoded_accesstoken["aud"] if "aud" in decoded_accesstoken else "unknown",
++                accesstoken
++                )
++        )
+     else:
+-        user = decoded_accesstoken["unique_name"] if "unique_name" in decoded_accesstoken \
+-            else decoded_accesstoken["upn"] if "upn" in decoded_accesstoken \
+-            else decoded_accesstoken["app_displayname"] if "app_displayname" in decoded_accesstoken \
+-            else decoded_accesstoken["oid"] if "oid" in decoded_accesstoken \
+-            else "unknown"
+-    
+-    row_id = execute_db("INSERT INTO accesstokens (stored_at, issued_at, expires_at, description, user, resource, accesstoken) VALUES (?,?,?,?,?,?,?)",(
+-            f"{datetime.now()}".split(".")[0],
+-            datetime.fromtimestamp(decoded_accesstoken["iat"]) if "iat" in decoded_accesstoken else "unknown",
+-            datetime.fromtimestamp(decoded_accesstoken["exp"]) if "exp" in decoded_accesstoken else "unknown",
+-            description,
+-            user,
+-            decoded_accesstoken["aud"] if "aud" in decoded_accesstoken else "unknown",
+-            accesstoken
+-            )
+-    )
++        # Opaque token (personal/consumer accounts) — use token response metadata
++        now = datetime.now()
++        issued_at = f"{now}".split(".")[0]
++        if token_response and "expires_in" in token_response:
++            expires_at = f"{now + timedelta(seconds=int(token_response['expires_in']))}".split(".")[0]
++        else:
++            expires_at = "unknown"
++        resource = (token_response or {}).get("scope", "unknown")
++        row_id = execute_db("INSERT INTO accesstokens (stored_at, issued_at, expires_at, description, user, resource, accesstoken) VALUES (?,?,?,?,?,?,?)",(
++                f"{now}".split(".")[0],
++                issued_at,
++                expires_at,
++                description,
++                "personal account",
++                resource,
++                accesstoken
++                )
++        )
+     return row_id
+     
+ def save_refresh_token(refreshtoken, description, user, tenant, resource, foci, client_id = "d3590ed6-52b3-4102-aeff-aad2292ab01c"):
+     # Used to convert potential boolean inputs to an integer, as the DB uses an integer to store this value
+     foci_int = 1 if foci else 0
+-    if tenant == "common":
+-        tenant_id = "common"
++    if tenant in ("common", "consumers"):
++        tenant_id = tenant
+     else:
+         tenant_id = tenant.strip('"{}-[]\\/\' ') if is_valid_uuid(tenant.strip('"{}-[]\\/\' ')) else get_tenant_id(tenant)
+     row_id =execute_db("INSERT INTO refreshtokens (stored_at, description, user, tenant_id, client_id, resource, foci, refreshtoken) VALUES (?,?,?,?,?,?,?,?)",(
+@@ -342,25 +368,33 @@
+     response = requests.post(url, data=body, headers=headers)
+     if response.status_code != 200:
+         return {parse_token_endpoint_error(response)}
+-    access_token = response.json()["access_token"]
+-    save_access_token(access_token, f"Created using refresh token {refresh_token_id}")
++    resp_json = response.json()
++    access_token = resp_json["access_token"]
++    save_access_token(access_token, f"Created using refresh token {refresh_token_id}", token_response=resp_json)
+     access_token_id = query_db("SELECT id FROM accesstokens where accesstoken = ?",[access_token],one=True)[0]
+     if store_refresh_token:
+-        decoded_accesstoken = jwt.decode(access_token, options={"verify_signature": False})
+-        user = "unknown"
+-        # If the idtype is user, use the unique_name or upn
+-        # If the idtype is app, use the app_displayname or appid
+-        if "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "user":
+-            user = decoded_accesstoken["unique_name"] if "unique_name" in decoded_accesstoken else decoded_accesstoken["upn"] if "upn" in decoded_accesstoken else "unknown"
+-        elif "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "app":
+-            user = decoded_accesstoken["app_displayname"] if "app_displayname" in decoded_accesstoken else decoded_accesstoken["appid"] if "appid" in decoded_accesstoken else "unknown"
++        try:
++            decoded_accesstoken = jwt.decode(access_token, options={"verify_signature": False})
++        except Exception:
++            decoded_accesstoken = None
++        if decoded_accesstoken:
++            user = "unknown"
++            # If the idtype is user, use the unique_name or upn
++            # If the idtype is app, use the app_displayname or appid
++            if "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "user":
++                user = decoded_accesstoken["unique_name"] if "unique_name" in decoded_accesstoken else decoded_accesstoken["upn"] if "upn" in decoded_accesstoken else "unknown"
++            elif "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "app":
++                user = decoded_accesstoken["app_displayname"] if "app_displayname" in decoded_accesstoken else decoded_accesstoken["appid"] if "appid" in decoded_accesstoken else "unknown"
++        else:
++            user = "personal account"
++        resource_val = resp_json.get("resource") or resp_json.get("scope", "unknown")
+         save_refresh_token(
+-            response.json()["refresh_token"],
++            resp_json["refresh_token"],
+             f"Created using refresh token {refresh_token_id}",
+             user,
+             tenant_id,
+-            response.json()["resource"]  if "resource" in response.json() else "unknown",
+-            response.json()["foci"] if "foci" in response.json() else 0,
++            resource_val,
++            resp_json.get("foci", 0),
+             client_id
+         )
+     return access_token_id
+@@ -389,7 +423,20 @@
+             if cae:
+                 claims_json["access_token"]["xms_cc"]= {"values":["cp1"]}
+             body["claims"]= json.dumps(claims_json)
+-        url = "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
++        # Use /consumers endpoint for client IDs that support personal Microsoft accounts
++        # Codes from /consumers must be entered at microsoft.com/link (not devicelogin)
++        CONSUMER_CLIENTS = {
++            "04b07795-8ddb-461a-bbee-02f9e1bf7b46",  # Microsoft Azure CLI
++            "1950a258-227b-4e31-a9cf-717495945fc2",  # Microsoft Azure PowerShell
++            "29d9ed98-a469-4536-ade2-f981bc1d605e",  # Microsoft Authentication Broker
++            "0ec893e0-5785-4de6-99da-4ed124e5296c",  # Office UWP PWA
++            "26a7ee05-5602-4d76-a7ba-eae8b7b67941",  # Windows Search
++            "1d18b3b0-251b-4714-a02a-9956cec86c2d",  # netcorebrowser (works with personal accounts)
++        }
++        if client_id in CONSUMER_CLIENTS:
++            url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
++        else:
++            url = "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
+     else:
+         raise AppError(f"Unsupported token endpoint version: '{version}'")
+     headers = {"User-Agent":get_user_agent()}
+@@ -417,52 +464,84 @@
+ 
+ def poll_device_codes():
+     with app.app_context():
++        print("[*] Device code polling thread started.", flush=True)
+         while True:
+             rows = query_db_json("SELECT * FROM devicecodes WHERE status IN ('CREATED','POLLING')")
+             if not rows:
++                print("[*] Device code polling thread finished (no active codes).", flush=True)
+                 return
+             sorted_rows =  sorted(rows, key=lambda x: x["last_poll"])
+             for row in sorted_rows:
++              try:
+                 current_time_seconds = int(datetime.now().timestamp())
+                 if current_time_seconds > row["expires_at"]:
+                     execute_db("UPDATE devicecodes SET status = ? WHERE device_code = ?",("EXPIRED",row["device_code"]))
+                     continue
+                 next_poll = row["last_poll"] + row["interval"]
+-                #print(f"[{current_time_seconds}] {row['user_code']} - {row['last_poll']} - {next_poll}", flush=True)
+                 if current_time_seconds < next_poll:
+                     time.sleep(next_poll - current_time_seconds)
+                 if row["status"] == "CREATED":
+                     execute_db("UPDATE devicecodes SET status = ? WHERE device_code = ?",("POLLING",row["device_code"]))
+-                body = {
+-                    "client_id": row["client_id"],
+-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+-                    "code": row["device_code"]
++                # Client IDs that use the v2 /consumers endpoint for device code flow
++                CONSUMER_CLIENTS = {
++                    "04b07795-8ddb-461a-bbee-02f9e1bf7b46",  # Microsoft Azure CLI
++                    "1950a258-227b-4e31-a9cf-717495945fc2",  # Microsoft Azure PowerShell
++                    "29d9ed98-a469-4536-ade2-f981bc1d605e",  # Microsoft Authentication Broker
++                    "0ec893e0-5785-4de6-99da-4ed124e5296c",  # Office UWP PWA
++                    "26a7ee05-5602-4d76-a7ba-eae8b7b67941",  # Windows Search
++                    "1d18b3b0-251b-4714-a02a-9956cec86c2d",  # netcorebrowser (works with personal accounts)
+                 }
+-                url = "https://login.microsoftonline.com/Common/oauth2/token?api-version=1.0"
++                if row["client_id"] in CONSUMER_CLIENTS:
++                    # v2.0 token endpoint requires 'device_code' parameter (not 'code')
++                    body = {
++                        "client_id": row["client_id"],
++                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
++                        "device_code": row["device_code"]
++                    }
++                    url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
++                else:
++                    # v1.0 token endpoint uses 'code' parameter
++                    body = {
++                        "client_id": row["client_id"],
++                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
++                        "code": row["device_code"]
++                    }
++                    url = "https://login.microsoftonline.com/Common/oauth2/token?api-version=1.0"
+                 headers = {"User-Agent":get_user_agent()}
+                 response = requests.post(url, data=body, headers=headers)
+                 execute_db("UPDATE devicecodes SET last_poll = ? WHERE device_code = ?",(int(datetime.now().timestamp()),row["device_code"]))
+                 if response.status_code == 200 and "access_token" in response.json():
+-                    access_token = response.json()["access_token"]
++                    resp_json = response.json()
++                    access_token = resp_json["access_token"]
+                     user_code = row["user_code"]
+-                    access_token_id = save_access_token(access_token, f"Created using device code auth ({user_code})")
+-                    decoded_accesstoken = jwt.decode(access_token, options={"verify_signature": False})
+-                    user = "unknown"
+-                    # If the idtype is user, use the unique_name or upn
+-                    # If the idtype is app, use the app_displayname or appid
+-                    if "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "user":
+-                        user = decoded_accesstoken["unique_name"] if "unique_name" in decoded_accesstoken else decoded_accesstoken["upn"] if "upn" in decoded_accesstoken else "unknown"
+-                    elif "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "app":
+-                        user = decoded_accesstoken["app_displayname"] if "app_displayname" in decoded_accesstoken else decoded_accesstoken["appid"] if "appid" in decoded_accesstoken else "unknown"
+-                    else:
++                    access_token_id = save_access_token(access_token, f"Created using device code auth ({user_code})", token_response=resp_json)
++                    # Personal/consumer tokens are opaque (not JWT) — handle gracefully
++                    try:
++                        decoded_accesstoken = jwt.decode(access_token, options={"verify_signature": False})
++                    except Exception:
++                        decoded_accesstoken = None
++                    if decoded_accesstoken:
+                         user = "unknown"
++                        if "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "user":
++                            user = decoded_accesstoken.get("unique_name") or decoded_accesstoken.get("upn", "unknown")
++                        elif "idtyp" in decoded_accesstoken and decoded_accesstoken["idtyp"] == "app":
++                            user = decoded_accesstoken.get("app_displayname") or decoded_accesstoken.get("appid", "unknown")
++                        else:
++                            user = decoded_accesstoken.get("email") or decoded_accesstoken.get("preferred_username") or decoded_accesstoken.get("unique_name") or decoded_accesstoken.get("sub", "unknown")
++                        resource = resp_json.get("resource") or decoded_accesstoken.get("aud") or resp_json.get("scope", "unknown")
++                        tenant_id = decoded_accesstoken.get("tid", "unknown")
++                    else:
++                        # Opaque token — extract what we can from the response
++                        user = "personal account"
++                        resource = resp_json.get("scope", "unknown")
++                        tenant_id = "consumers"
+                     refresh_token_id = save_refresh_token(
+-                        response.json()["refresh_token"], 
+-                        f"Created using device code auth ({user_code})", 
+-                        user, 
+-                        decoded_accesstoken["tid"] if "tid" in decoded_accesstoken else "unknown", 
+-                        response.json()["resource"]if "resource" in response.json() else "unknown", 
+-                        int(response.json()["foci"]) if "foci" in response.json() else 0,
++                        resp_json["refresh_token"],
++                        f"Created using device code auth ({user_code})",
++                        user,
++                        tenant_id,
++                        resource,
++                        int(resp_json["foci"]) if "foci" in resp_json else 0,
+                         row["client_id"]
+                     )
+                     if row.get("auto_action") in ["device_prt", "winhello"]:
+@@ -479,6 +558,11 @@
+                             execute_db("UPDATE devicecodes SET status = ? WHERE device_code = ?",("PARTIAL_SUCCESS",row["device_code"]))
+                             continue
+                     execute_db("UPDATE devicecodes SET status = ? WHERE device_code = ?",("SUCCESS",row["device_code"]))
++              except Exception as e:
++                print(f"[!] Polling error for code '{row.get('user_code', '?')}': {e}", flush=True)
++                import traceback
++                traceback.print_exc()
++                continue
+ 
+ def start_device_code_thread():
+     if "device_code_thread" in app.config:
+@@ -2163,8 +2247,12 @@
+     def api_decode_token(id):
+         rows = query_db("SELECT accesstoken FROM accesstokens WHERE id = ?",[id],one=True)
+         if rows:
+-            decoded_accesstoken = jwt.decode(rows[0], options={"verify_signature": False})
+-            return decoded_accesstoken
++            try:
++                decoded_accesstoken = jwt.decode(rows[0], options={"verify_signature": False})
++                return decoded_accesstoken
++            except Exception:
++                # Opaque token (personal/consumer account) — cannot be decoded as JWT
++                return {"info": "This is an opaque access token (personal Microsoft account). It cannot be decoded like a standard JWT, but it is still valid for API calls.", "token_preview": rows[0][:50] + "..." if len(rows[0]) > 50 else rows[0]}
+         else:
+             return f"[Error] Could not find access token with id {id}"
+ 
